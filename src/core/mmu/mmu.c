@@ -17,6 +17,8 @@
 /* simple macro to tranlsate this to the mmu arrangement */
 #define ACCESS_TYPE_TO_MMU(access_type) ((1 << access_type) << 1)
 
+void dump_pagetables(mmu_td *mmu, privilege_level curr_priv);
+
 rv_ret mmu_read_csr(void *priv, privilege_level curr_priv_mode, uint16_t reg_index, rv_uint_xlen *out_val)
 {
     (void)curr_priv_mode;
@@ -209,14 +211,17 @@ uint64_t mmu_virt_to_phys(mmu_td *mmu,
     *ret_val = mmu_ok;
     uint8_t mode = extractxlen(mmu->satp_reg, MMU_SATP_MODE_BIT, MMU_SATP_MODE_NR_BITS);
 
-    MMU_DEBUG("priv=%i, mode=%i: %lx\n", curr_priv, mode, virt_addr);
+//    MMU_DEBUG("priv=%i, mode=%i: %lx\n", curr_priv, mode, virt_addr);
     
     /* in machine mode we don't have address translation */
     if( (curr_priv == machine_mode) || !mode )
     {
+     if (!mode || !(virt_addr & 0xffffffff00000000)) {
         MMU_DEBUG("=> machine mode\n");
         return virt_addr;
     }
+    }
+    MMU_DEBUG("!mode = %d, !(virt_addr & 0xffffffff00000000) = %d\n", !mode, !(virt_addr & 0xffffffff00000000));
     
     rv_uint_xlen vpn[MAX_LEVELS] = {0};
     uint8_t levels = 0;
@@ -395,10 +400,119 @@ uint64_t mmu_virt_to_phys(mmu_td *mmu,
     return phys_addr_translation[i];
 
     exit_page_fault:
-        // printf("page fault!!!\n");
+        printf("page fault!!!\n");
+        dump_pagetables(mmu, curr_priv);
         *ret_val = mmu_page_fault;
         return 0;
 }
+
+void dump_pagetables_subtree(mmu_td *mmu,
+                             privilege_level curr_priv,
+                             rv_uint_xlen table,
+                             int level,
+                             uint8_t mode,
+                             uint8_t levels,
+                             uint16_t page_size,
+                             uint16_t pte_size,
+                             uint8_t bits_per_level
+                             ) {
+    int i, addr;
+    rv_uint_xlen pte;
+    rv_uint_xlen ppn[MAX_LEVELS] = {0};
+//    int res;
+    
+    for (i = 0; i < level; i++) { printf(" "); } printf("%lx BEGIN\n", table);
+
+//    printf("(1<<(bits_per_level=%x-1))-1 = %lx\n", bits_per_level, (((rv_uint_xlen)1) << bits_per_level) - 1);
+    for(addr=0;addr < (1<<bits_per_level)-1;addr++)
+    {
+     //res =
+         mmu->bus_access(mmu->priv, curr_priv, bus_read_access, table + (addr * pte_size), &pte, sizeof(rv_uint_xlen));
+//        printf("    %x @ %lx: %i / %lx\n", addr, table + (addr * pte_size), res, pte);
+        
+        if( (!(pte & MMU_PAGE_VALID)) || ((!(pte & MMU_PAGE_READ)) && (pte & MMU_PAGE_WRITE)) ) continue;
+        
+        if (mode == supervisor_mode) {
+           pte = pte << SV32_PTESHIFT;
+           ppn[0] = (pte >> 12) & 0x3ff; // 10 bits
+           ppn[1] = (pte >> 22) & 0xfff; // What's going on here? Should be 10 bits here too, to make up 20 bits total (10 to 30).
+        } else if (mode == supervisor_39_mode) {
+            pte = pte << SV39_PTESHIFT;
+            ppn[0] = (pte >> 12) & 0x1ff; // 9 bits
+            ppn[1] = (pte >> 21) & 0x1ff; // 9 bits
+            ppn[2] = (pte >> 30) & 0x1ff; // 9 bits
+        };
+        uint64_t phys_addr_translation[MAX_LEVELS] = { 0 };
+        if (mode == supervisor_mode) {
+            phys_addr_translation[0] = (ppn[1] << 22) | (ppn[0] << 12);
+            phys_addr_translation[1] = (ppn[1] << 22);
+        } else if (mode == supervisor_39_mode) {
+            phys_addr_translation[0] = (ppn[2] << 30) | (ppn[1] << 21) | (ppn[0] << 12);
+            phys_addr_translation[1] = (ppn[2] << 30) | (ppn[1] << 21);
+            phys_addr_translation[2] = (ppn[2] << 30);
+        }
+    
+        for (i = 0; i < level + 1; i++) { printf(" "); }
+        if (level + 1 >= levels) {
+            printf("%x: %lx LEAF\n", addr, phys_addr_translation[level]);
+        } else if(pte & 0xA) {
+            printf("%x: %lx SUPERPAGE\n", addr, phys_addr_translation[level]);
+        } else {
+            printf("%x: %lx\n", addr, (pte >> bits_per_level) * page_size);
+            dump_pagetables_subtree(mmu,
+                                    curr_priv,
+                                    phys_addr_translation[0], //(pte >> bits_per_level) * page_size,
+                                    level+2,
+                                    mode,
+                                    levels,
+                                    page_size,
+                                    pte_size,
+                                    bits_per_level
+                                    );
+        }
+    }
+    for (i = 0; i < level; i++) { printf(" "); } printf("%lx END\n", table);
+}
+
+void dump_pagetables(mmu_td *mmu,
+                     privilege_level curr_priv
+                     ) {
+    uint8_t mode = extractxlen(mmu->satp_reg, MMU_SATP_MODE_BIT, MMU_SATP_MODE_NR_BITS);
+    uint8_t levels = 0;
+    uint16_t page_size = 0;
+    uint16_t pte_size = 0;
+    uint8_t bits_per_level = 0;
+    if (mode == supervisor_mode) {
+        levels = SV32_LEVELS;
+        page_size = SV32_PAGE_SIZE;
+        pte_size = SV32_PTESIZE;
+        bits_per_level = 10;
+    } else if (mode == supervisor_39_mode) {
+        levels = SV39_LEVELS; 
+        page_size = SV39_PAGE_SIZE;
+        pte_size = SV39_PTESIZE;
+        bits_per_level = 9;
+    }
+    printf("curr_priv: %x\nmode: %x\nlevels: %x\npage_size: %x\npte_size: %x\nbits_per_level: %x\n",
+           curr_priv,
+           mode,
+           levels,
+           page_size,
+           pte_size,
+           bits_per_level
+           );
+    dump_pagetables_subtree(mmu,
+                            curr_priv,
+                            (mmu->satp_reg & ((((rv_uint_xlen) 1)<<44) - 1)) * page_size,
+                            0,
+                            mode,
+                            levels,
+                            page_size,
+                            pte_size,
+                            bits_per_level
+                            );
+}
+
 #endif
 
 void mmu_dump(mmu_td *mmu)

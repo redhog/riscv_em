@@ -117,7 +117,6 @@ void rv_soc_init(rv_soc_td *rv_soc, char *fw_file_name, char *dtb_file_name, cha
     write_mem_from_file(fw_file_name, soc_ram, sizeof(soc_ram));
 
     if (initrd_file_name != NULL) {
-     printf("XXXXXXXXXXXXXXXXXXXXXXXXXXX\n");
       write_mem_from_file(initrd_file_name, soc_from, FROM_SIZE_BYTES);
     }
     

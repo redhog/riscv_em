@@ -1843,11 +1843,11 @@ void rv_core_reg_dump(rv_core_td *rv_core)
 
     int i = 0;
 
-    DEBUG_PRINT("pc: " PRINTF_FMT "\n", rv_core->pc);
-    DEBUG_PRINT("instr: %08x\n", rv_core->instruction);
+    printf/*DEBUG_PRINT*/("pc: " PRINTF_FMT "\n", rv_core->pc);
+    printf/*DEBUG_PRINT*/("instr: %08x\n", rv_core->instruction);
     for(i=0;i<NR_RVI_REGS;i++)
     {
-        DEBUG_PRINT("x[%2d]: " PRINTF_FMT "\n", i, rv_core->x[i]);
+     printf/*DEBUG_PRINT*/("x[%2d]: " PRINTF_FMT "\n", i, rv_core->x[i]);
     }
 }
 
